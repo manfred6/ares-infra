@@ -1,0 +1,40 @@
+#cloud-config
+
+autoinstall:
+  version: 1
+
+  locale: en_US.UTF-8
+
+  keyboard:
+    layout: us
+
+  ssh:
+    install-server: true
+    allow-pw: false
+
+  storage:
+    layout:
+      name: direct
+
+  packages:
+    - qemu-guest-agent
+    - curl
+    - ca-certificates
+    - btop
+    - tcpdump
+
+  user-data:
+    users:
+      - name: packer
+        groups:
+          - sudo
+        shell: /bin/bash
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        lock_passwd: true
+
+        ssh_authorized_keys:
+          - "${ssh_public_key}"
+
+  late-commands:
+    - curtin in-target -- systemctl enable qemu-guest-agent
+

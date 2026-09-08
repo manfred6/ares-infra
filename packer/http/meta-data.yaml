@@ -1,0 +1,3 @@
+# http/meta-data
+instance-id: packer-ubuntu-24.04
+local-hostname: ubuntu-template-24.04
