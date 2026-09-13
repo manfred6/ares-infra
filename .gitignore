@@ -1,5 +1,8 @@
 .secrets/
 **/*.auto.pkrvars.hcl
+**/*.tfstate
+**/*.tfstate.backup
+**/*.tfplan
 
 # Local .terraform directories
 .terraform/
