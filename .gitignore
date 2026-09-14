@@ -1,3 +1,4 @@
+**/artifacts/
 .secrets/
 **/*.auto.pkrvars.hcl
 **/*.tfstate
