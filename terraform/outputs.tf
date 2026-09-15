@@ -6,7 +6,7 @@ resource "local_sensitive_file" "ed25519_private_key" {
 
 resource "local_file" "ed25519_public_key" {
   content  = tls_private_key.k3s.public_key_openssh
-  filename = "${path.module}/.sectets/id_ed25519.pub"
+  filename = "${path.module}/.secrets/id_ed25519.pub"
 }
 
 output "ubuntu_vm_password" {
