@@ -111,6 +111,6 @@ variable "os_username" {
 
 variable "ssh_key_path" {
   type   = string
-  default = "~/ares-detection/packer/.secrets/resolute-ed25519"
+  default = "~/ares-infra/packer/.secrets/resolute-ed25519"
 
 }

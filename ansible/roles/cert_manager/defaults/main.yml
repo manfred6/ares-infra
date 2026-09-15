@@ -4,7 +4,7 @@ cert_manager_namespace: cert-manager
 cert_manager_chart_name: cert-manager
 
 # Root CA 
-lab_pki_dir: "/root/ares-detection/.secrets/pki"
+lab_pki_dir: "/root/ares-infra/.secrets/pki"
 lab_root_ca_dir: "{{ lab_pki_dir }}/root"
 lab_ca_key: "{{ lab_root_ca_dir }}/root-ca.key"
 lab_ca_cert: "{{ lab_root_ca_dir }}/root-ca.crt"

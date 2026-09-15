@@ -219,7 +219,7 @@
               is_default_monitoring: true
               ssl:
                 certificate_authorities:
-                  - "{{ lookup('ansible.builtin.file', '/root/ares-detection/.secrets/pki/root/root-ca.crt') }}"
+                  - "{{ lookup('ansible.builtin.file', '/root/ares-infra/.secrets/pki/root/root-ca.crt') }}"
 
           # External fleet server endpoint for GOAD and other external agents
           xpack.fleet.fleetServerHosts:

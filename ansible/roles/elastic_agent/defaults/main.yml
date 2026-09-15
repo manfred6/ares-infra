@@ -5,7 +5,7 @@ ares_dns_forwarder: "192.168.30.1"
 elastic_agent_version: "9.5.3"
 elastic_fleet_url: "https://fleet.ares.internal"
 elastic_fleet_enrollment_token: ""
-elastic_root_ca_src: "/root/ares-detection/.secrets/pki/root/root-ca.crt"
+elastic_root_ca_src: "/root/ares-infra/.secrets/pki/root/root-ca.crt"
 elastic_agent_controller_cache_dir: "/tmp/goad-elastic-agent"
 elastic_agent_archive_name: "elastic-agent-{{ elastic_agent_version }}-windows-x86_64.zip"
 elastic_agent_download_url: >-

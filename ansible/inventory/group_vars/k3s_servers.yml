@@ -30,7 +30,7 @@ elastic_kubeconfig: "{{ playbook_dir }}/../artifacts/kubeconfig.yaml"
 # The cert_manager role bootstraps the root CA here on first run. Its private
 # key stays on the provisioning host and is NEVER copied into Kubernetes.
 lab_domain: "ares.internal"
-lab_pki_dir: "/root/ares-detection/.secrets/pki"
+lab_pki_dir: "/root/ares-infra/.secrets/pki"
 
 cert_manager_version: "v1.21.1"
 cert_manager_namespace: cert-manager
