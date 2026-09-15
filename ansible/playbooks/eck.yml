@@ -1,0 +1,7 @@
+---
+- name: Install ECK and deploy Elastic Stack
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: eck

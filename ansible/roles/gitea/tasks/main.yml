@@ -1,0 +1,281 @@
+---
+- name: Get gitea admin password
+  ansible.buildin.set_fact:
+    gitea_admin_password: "{{ lookup('ansible.builtin.env', 'GITEA_ADMIN_PASSWORD') }}"
+
+- name: Validate gitea config
+  ansible.builtin.assert:
+    that:
+      - kubeconfig | default('') | length > 0
+      - gitea_hostname | default('') | length > 0
+      - gitea_admin_username | default('') | length > 0
+      - gitea_admin_password | default('') | length > 0
+    fail_msg: >-
+      Gitea configuration is incomplete.
+      Make sure GITEA_ADMIN_PASSWORD is exported on the provisioning host.
+  no_log: true
+
+- name: Create Gitea namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gitea_namespace }}"
+
+- name: Create Gitea admin secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ gitea_admin_secret_name }}"
+        namespace: "{{ gitea_namespace }}"
+      type: Opaque
+      stringData:
+        username: "{{ gitea_admin_username }}"
+        password: "{{ gitea_admin_password }}"
+  no_log: true
+
+# Gitea
+- name: Install Gitea 
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: "{{ gitea_release_name }}"
+        namespace: "{{ gitea_namespace }}"
+      spec:
+        repo: "{{ gitea_chart_repo }}"
+        chart: "{{ gitea_chart_name }}"
+        version: "{{ gitea_chart_version }}"
+
+        targetNamespace: "{{ gitea_namespace }}"
+        createNamespace: true
+        timeout: 10m
+
+        valuesContent: |
+          ingress:
+            enabled: false
+
+          service:
+            http:
+              type: ClusterIP
+              port: 3000
+              clusterIP:
+
+            ssh:
+              type: ClusterIP
+              clusterIP:
+
+          persistence:
+            enabled: true
+            create: true
+            storageClass: "{{ gitea_storage_class }}"
+            size: "{{ gitea_storage_size }}"
+            accessModes:
+              - ReadWriteOnce
+
+          postgresql-ha:
+            enabled: false
+
+          postgresql:
+            enabled: false
+
+          valkey-cluster:
+            enabled: false
+
+          valkey:
+            enabled: false
+
+          gitea:
+            admin:
+              existingSecret: "{{ gitea_admin_secret_name }}"
+              email: "{{ gitea_admin_email }}"
+              passwordMode: keepUpdated
+
+            config:
+              server:
+                DOMAIN: "{{ gitea_hostname }}"
+                ROOT_URL: "https://{{ gitea_hostname }}/"
+                PROTOCOL: http
+                HTTP_PORT: 3000
+                DISABLE_SSH: true
+
+              database:
+                DB_TYPE: sqlite3
+                PATH: /data/gitea/gitea.db
+
+              actions:
+                ENABLED: true
+  register: gitea_apply
+  until: gitea_apply is succeeded
+  retries: 10
+  wait: 5
+
+# Traefik ingress
+- name: Expose gitea through traefik
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: gitea
+        namespace: "{{ gitea_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+
+        routes:
+          - kind: Rule
+            match: "Host(`{{ gitea_hostname }}`)"
+            services:
+              - name: "{{ gitea_release_name }}-http"
+                port: 3000
+                scheme: http
+
+        # Empty tls block means traefik terminate TLS with existing TLSStore wildcard cert
+        tls: {}
+
+- name: Wait for Gitea HTTPS endpoint
+  ansible.builtin.uri:
+    url: "https://{{ gitea_hostname }}/api/healthz"
+    method: GET
+    status_code: 200
+    ca_path: "{{ gitea_ca_path }}"
+  register: gitea_health
+  until: gitea_health.status == 200
+  retries: 60
+  delay: 5
+
+# Runner registration token
+- name: Get Gitea runner registration token
+  ansible.builtin.uri:
+    url: >-
+      https://{{ gitea_hostname }}/api/v1/admin/actions/runners/registration-token
+    method: POST
+
+    url_username: "{{ gitea_admin_username }}"
+    url_password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+
+    ca_path: "{{ gitea_ca_path }}"
+
+    status_code: 200
+    return_content: true
+  register: gitea_runner_token
+  no_log: true
+
+
+- name: Create Gitea runner registration secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ gitea_runner_secret_name }}"
+        namespace: "{{ gitea_namespace }}"
+      type: Opaque
+      stringData:
+        token: "{{ gitea_runner_token.json.token }}"
+  no_log: true
+
+# Gitea runner
+- name: Deploy Gitea runner StatefulSet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: "{{ gitea_runner_name }}"
+        namespace: "{{ gitea_namespace }}"
+
+      spec:
+        serviceName: "{{ gitea_runner_name }}"
+        replicas: "{{ gitea_runner_replicas }}"
+
+        selector:
+          matchLabels:
+            app: "{{ gitea_runner_name }}"
+
+        template:
+          metadata:
+            labels:
+              app: "{{ gitea_runner_name }}"
+
+          spec:
+            securityContext:
+              fsGroup: 1000
+
+            containers:
+              - name: runner
+                image: "{{ gitea_runner_image }}"
+                imagePullPolicy: IfNotPresent
+
+                env:
+                  - name: GITEA_INSTANCE_URL
+                    value: "{{ gitea_runner_instance_url }}"
+
+                  - name: GITEA_RUNNER_REGISTRATION_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: "{{ gitea_runner_secret_name }}"
+                        key: token
+
+                  - name: GITEA_RUNNER_LABELS
+                    value: "{{ gitea_runner_labels }}"
+
+                  - name: GITEA_MAX_REG_ATTEMPTS
+                    value: "60"
+
+                resources:
+                  requests:
+                    memory: "{{ gitea_runner_memory_request }}"
+                    cpu: "{{ gitea_runner_cpu_request }}"
+                  limits:
+                    memory: "{{ gitea_runner_memory_limit }}"
+                    cpu: "{{ gitea_runner_cpu_limit }}"
+
+                volumeMounts:
+                  # Persistent runner registration.
+                  - name: runner-data
+                    mountPath: /data
+
+                  # Docker image/build cache.
+                  - name: docker-data
+                    mountPath: /home/rootless/.local/share/docker
+
+            volumes:
+              - name: docker-data
+                emptyDir: {}
+
+        volumeClaimTemplates:
+          - metadata:
+              name: runner-data
+            spec:
+              accessModes:
+                - ReadWriteOnce
+
+              storageClassName: "{{ gitea_runner_storage_class }}"
+
+              resources:
+                requests:
+                  storage: "{{ gitea_runner_storage_size }}"
+  register: runner_apply
+  until: runner_apply is succeeded
+  retries: 10
+  wait: 5
+

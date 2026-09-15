@@ -1,0 +1,14 @@
+---
+# Kubernetes client
+elastic_kubeconfig: "{{ playbook_dir }}/../artifacts/kubeconfig.yaml"
+kubeconfig: "{{ playbook_dir }}/../artifacts/kubeconfig.yaml"
+
+# Elastic namespace / endpoints
+elastic_namespace: elastic
+
+elasticsearch_hostname: es.ares.internal
+kibana_hostname: kibana.ares.internal
+fleet_server_hostname: fleet.ares.internal
+
+# Fleet
+eck_external_fleet_host_id: ares-external-fleet-server

@@ -1,0 +1,13 @@
+---
+ansible_become: false
+
+ansible_user: vagrant
+ansible_password: vagrant
+
+ansible_connection: winrm
+ansible_port: 5985
+ansible_winrm_transport: ntlm
+ansible_winrm_server_cert_validation: ignore
+
+ares_dns_zone: ares.internal
+ares_dns_forwarder: 192.168.30.1

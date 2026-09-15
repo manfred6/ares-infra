@@ -1,0 +1,47 @@
+---
+- name: Check sysmon service
+  ansible.windows.win_service_info:
+    name: "{{ sysmon_service_name }}"
+  register: sysmon_service
+
+- name: Ensure monitoring directory exists
+  ansible.windows.win_file:
+    path: "{{ sysmon_work_dir }}"
+    state: directory
+
+- name: Download sysmon
+  ansible.windows.win_get_url:
+    url: "{{ sysmon_download_url }}"
+    dest: "{{ sysmon_zip_path }}"
+  when: not sysmon_service.exists
+
+- name: Extract sysmon
+  community.windows.win_unzip:
+    src: "{{ sysmon_zip_path }}"
+    dest: "{{ sysmon_install_dir }}"
+    creates: "{{ sysmon_executable }}"
+  when: not sysmon_service.exists
+
+- name: Deploy sysmon configuration
+  ansible.windows.win_copy:
+    src: "{{ sysmon_config_source }}"
+    dest: "{{ sysmon_config_path }}"
+  register: sysmon_config
+
+- name: Install sysmon
+  ansible.windows.win_command: >-
+    "{{ sysmon_executable }}"
+    -accepteula
+    -i
+    "{{ sysmon_config_path }}"
+  when: not sysmon_service.exists
+
+- name: Update sysmon configuration
+  ansible.windows.win_command: >-
+    "{{ sysmon_executable }}"
+    -c
+    "{{ sysmon_config_path }}"
+  when:
+    - sysmon_service.exists
+    - sysmon_config.changed
+

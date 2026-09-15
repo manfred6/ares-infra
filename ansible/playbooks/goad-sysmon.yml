@@ -1,0 +1,6 @@
+---
+- name: Bootstrap Sysmon for GOAD Windows Servers
+  hosts: goad_windows
+  gather_facts: true
+  roles:
+    - role: sysmon

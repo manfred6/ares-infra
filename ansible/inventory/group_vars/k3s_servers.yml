@@ -1,0 +1,112 @@
+---
+# -----------------------------------------------------------------------------
+# K3s
+# -----------------------------------------------------------------------------
+k3s_version: "v1.36.4+k3s1"
+k3s_flannel_backend: vxlan
+k3s_cluster_cidr: "10.42.0.0/16"
+k3s_service_cidr: "10.43.0.0/16"
+k3s_cluster_domain: cluster.local
+
+# Leave blank to use the first K3s server's IP in the fetched kubeconfig.
+# If you later add kube-vip, put the VIP/DNS name here and in k3s_api_sans.
+k3s_api_endpoint: ""
+k3s_api_sans: []
+
+# Node resolver: use OPNsense for upstream DNS and add the lab domain as a
+# search domain. `~.` makes OPNsense the route for all DNS lookups; it can
+# forward public queries normally.
+k3s_dns_server: "192.168.30.1"
+k3s_dns_search_domain: "{{ lab_domain }}"
+
+# -----------------------------------------------------------------------------
+# Shared Kubernetes client settings
+# -----------------------------------------------------------------------------
+elastic_kubeconfig: "{{ playbook_dir }}/../artifacts/kubeconfig.yaml"
+
+# -----------------------------------------------------------------------------
+# Lab PKI + cert-manager
+# -----------------------------------------------------------------------------
+# The cert_manager role bootstraps the root CA here on first run. Its private
+# key stays on the provisioning host and is NEVER copied into Kubernetes.
+lab_domain: "ares.internal"
+lab_pki_dir: "/root/ares-detection/.secrets/pki"
+
+cert_manager_version: "v1.21.1"
+cert_manager_namespace: cert-manager
+
+# Long-lived intermediate used by cert-manager. This key DOES live in a
+# Kubernetes Secret, while the root key remains offline/on the provisioning
+# host. The intermediate is pathLen=0 and DNS-name-constrained to lab_domain.
+lab_issuing_ca_common_name: "Ares Lab Issuing CA"
+lab_issuing_ca_validity_days: 1825
+lab_issuing_ca_secret_name: lab-issuing-ca
+lab_cluster_issuer_name: lab-ca
+
+# cert-manager renews the shared ingress certificate automatically.
+lab_wildcard_namespace: kube-system
+lab_wildcard_certificate_name: lab-wildcard
+lab_wildcard_tls_secret_name: lab-wildcard-tls
+lab_wildcard_duration: 2160h       # 90 days
+lab_wildcard_renew_before: 720h    # 30 days
+
+# -----------------------------------------------------------------------------
+# MetalLB + Traefik edge
+# -----------------------------------------------------------------------------
+metallb_chart_version: "0.16.1"
+metallb_namespace: metallb-system
+metallb_pool_name: lab-pool
+metallb_addresses:
+  - "192.168.30.200-192.168.30.250"
+
+traefik_namespace: kube-system
+
+# One address from the MetalLB pool, owned by Traefik. DNS names below should
+# all resolve to this address (a wildcard DNS record is convenient).
+traefik_lb_ip: "192.168.30.200"
+
+# -----------------------------------------------------------------------------
+# ECK / Elastic
+# -----------------------------------------------------------------------------
+eck_version: "3.5.0"
+elastic_stack_version: "9.5.3"
+
+eck_operator_namespace: elastic-system
+elastic_namespace: elastic
+
+elasticsearch_name: elasticsearch
+kibana_name: kibana
+fleet_server_name: fleet-server
+elastic_agent_name: elastic-agent
+
+elasticsearch_hostname: "es.{{ lab_domain }}"
+kibana_hostname: "kibana.{{ lab_domain }}"
+fleet_server_hostname: "fleet.{{ lab_domain }}"
+
+elasticsearch_storage_class: local-path
+elasticsearch_storage_size: 30Gi
+
+elasticsearch_memory_request: 3Gi
+elasticsearch_memory_limit: 4Gi
+elasticsearch_cpu_request: 500m
+elasticsearch_cpu_limit: "2"
+
+kibana_memory_request: 1Gi
+kibana_memory_limit: 2Gi
+kibana_cpu_request: 250m
+kibana_cpu_limit: "1"
+
+fleet_memory_request: 512Mi
+fleet_memory_limit: 1Gi
+fleet_cpu_request: 100m
+fleet_cpu_limit: 500m
+
+elastic_agent_memory_request: 256Mi
+elastic_agent_memory_limit: 1Gi
+elastic_agent_cpu_request: 100m
+elastic_agent_cpu_limit: 500m
+
+# Keep the in-cluster ECK Agent policy tied to the internal Fleet Server host.
+# A second externally reachable Fleet Server host is preconfigured for agents
+# you enroll later from outside Kubernetes.
+eck_external_fleet_host_id: lab-external-fleet-server

@@ -1,0 +1,9 @@
+---
+sysmon_work_dir: 'C:\monitoring'
+sysmon_download_url: 'https://download.sysinternals.com/files/Sysmon.zip'
+sysmon_zip_path: '{{ sysmon_work_dir }}\sysmon.zip'
+sysmon_install_dir: '{{ sysmon_work_dir }}\sysmon'
+sysmon_executable: '{{ sysmon_install_dir }}\Sysmon64.exe'
+sysmon_config_source: "sysmon-config.xml"
+sysmon_config_path: '{{ sysmon_work_dir }}\sysmon-config.xml'
+sysmon_service_name: 'Sysmon64'

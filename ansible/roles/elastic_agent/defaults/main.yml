@@ -1,0 +1,21 @@
+---
+ares_dns_zone: "ares.internal"
+ares_dns_forwarder: "192.168.30.1"
+
+elastic_agent_version: "9.5.3"
+elastic_fleet_url: "https://fleet.ares.internal"
+elastic_fleet_enrollment_token: ""
+elastic_root_ca_src: "/root/ares-detection/.secrets/pki/root/root-ca.crt"
+elastic_agent_controller_cache_dir: "/tmp/goad-elastic-agent"
+elastic_agent_archive_name: "elastic-agent-{{ elastic_agent_version }}-windows-x86_64.zip"
+elastic_agent_download_url: >-
+  https://artifacts.elastic.co/downloads/beats/elastic-agent/{{ elastic_agent_archive_name }}
+elastic_agent_controller_archive: "{{ elastic_agent_controller_cache_dir }}/{{ elastic_agent_archive_name }}"
+elastic_agent_windows_staging_dir: 'C:\ProgramData\Ares\ElasticAgent'
+elastic_agent_windows_archive: '{{ elastic_agent_windows_staging_dir }}\{{ elastic_agent_archive_name }}'
+elastic_agent_windows_ca: '{{ elastic_agent_windows_staging_dir }}\ares-root-ca.crt'
+elastic_agent_windows_extract_dir: '{{ elastic_agent_windows_staging_dir }}\extracted'
+elastic_agent_windows_source_dir: >-
+  {{ elastic_agent_windows_extract_dir }}\elastic-agent-{{ elastic_agent_version }}-windows-x86_64
+elastic_agent_windows_source_exe: '{{ elastic_agent_windows_source_dir }}\elastic-agent.exe'
+elastic_agent_service_name: "Elastic Agent"

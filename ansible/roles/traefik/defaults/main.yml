@@ -1,0 +1,10 @@
+---
+# Traefik
+traefik_namespace: kube-system
+traefik_tls_secret_name: "{{ lab_wildcard_tls_secret_name }}"
+traefik_tls_store_name: default
+
+# MetalLB
+metallb_namespace: metallb-system
+metallb_pool_name: lab-pool
+metallb_chart_version: "0.16.1"

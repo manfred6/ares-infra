@@ -1,0 +1,435 @@
+---
+- name: Validate ECK configuration
+  ansible.builtin.assert:
+    that:
+      - elastic_kubeconfig | length > 0
+      - eck_version | length > 0
+      - elastic_stack_version | length > 0
+      - elasticsearch_hostname | length > 0
+      - kibana_hostname | length > 0
+      - fleet_server_hostname | length > 0
+
+- name: Configure vm.max_map_count
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "1048576"
+    state: present
+    sysctl_set: true
+    reload: true
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['k3s_servers'] }}"
+
+- name: Create ECK operator namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ eck_operator_namespace }}"
+
+- name: Install ECK operator
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: eck-operator
+        namespace: kube-system
+      spec:
+        repo: https://helm.elastic.co
+        chart: eck-operator
+        version: "{{ eck_version }}"
+        targetNamespace: "{{ eck_operator_namespace }}"
+        createNamespace: false
+        timeout: 10m
+
+- name: Create Elastic namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ elastic_namespace }}"
+
+# https://www.elastic.co/docs/deploy-manage/deploy/cloud-on-k8s/configuration-fleet
+- name: Create Elastic Agent service account
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: elastic-agent
+        namespace: "{{ elastic_namespace }}"
+
+- name: Create Elastic Agent cluster role
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: elastic-agent
+      rules:
+        - apiGroups: [""]
+          resources:
+            - pods
+            - nodes
+            - namespaces
+          verbs:
+            - get
+            - watch
+            - list
+        - apiGroups: ["coordination.k8s.io"]
+          resources:
+            - leases
+          verbs:
+            - get
+            - create
+            - update
+        - apiGroups: ["apps"]
+          resources:
+            - replicasets
+          verbs:
+            - list
+            - watch
+        - apiGroups: ["batch"]
+          resources:
+            - jobs
+          verbs:
+            - list
+            - watch
+
+- name: Bind Elastic Agent cluster role
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: elastic-agent
+      subjects:
+        - kind: ServiceAccount
+          name: elastic-agent
+          namespace: "{{ elastic_namespace }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: elastic-agent
+
+- name: Deploy Elasticsearch
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: elasticsearch.k8s.elastic.co/v1
+      kind: Elasticsearch
+      metadata:
+        name: "{{ elasticsearch_name }}"
+        namespace: "{{ elastic_namespace }}"
+      spec:
+        version: "{{ elastic_stack_version }}"
+        monitoring:
+          metrics:
+            elasticsearchRefs:
+              - name: "{{ elasticsearch_name }}"
+          logs:
+            elasticsearchRefs:
+              - name: "{{ elasticsearch_name }}"
+        nodeSets:
+          - name: default
+            count: "{{ elasticsearch_node_count }}"
+            podTemplate:
+              spec:
+                containers:
+                  - name: elasticsearch
+                    resources:
+                      requests:
+                        memory: "{{ elasticsearch_memory_request }}"
+                        cpu: "{{ elasticsearch_cpu_request }}"
+                      limits:
+                        memory: "{{ elasticsearch_memory_limit }}"
+                        cpu: "{{ elasticsearch_cpu_limit }}"
+            volumeClaimTemplates:
+              - metadata:
+                  name: elasticsearch-data
+                spec:
+                  accessModes:
+                    - ReadWriteOnce
+                  storageClassName: "{{ elasticsearch_storage_class }}"
+                  resources:
+                    requests:
+                      storage: "{{ elasticsearch_storage_size }}"
+  register: elasticsearch_apply
+  until: elasticsearch_apply is succeeded
+  retries: 10
+  delay: 5
+
+- name: Deploy Kibana and preconfigure Fleet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    server_side_apply:
+      field_manager: ares-ansible
+      force_conflicts: true
+    definition:
+      apiVersion: kibana.k8s.elastic.co/v1
+      kind: Kibana
+      metadata:
+        name: "{{ kibana_name }}"
+        namespace: "{{ elastic_namespace }}"
+      spec:
+        version: "{{ elastic_stack_version }}"
+        count: 1
+        monitoring:
+          metrics:
+            elasticsearchRefs:
+              - name: "{{ elasticsearch_name }}"
+          logs:
+            elasticsearchRefs:
+              - name: "{{ elasticsearch_name }}"
+        elasticsearchRef:
+          name: "{{ elasticsearch_name }}"
+
+        config:
+          server.publicBaseUrl: "https://{{ kibana_hostname }}"
+
+          # Default fleet server for agents running inside K3S
+          xpack.fleet.agents.fleet_server.hosts:
+            - "https://fleet-server-agent-http.{{ elastic_namespace }}.svc:8220"
+
+          # ES output for all fleet-managed agents
+          xpack.fleet.outputs:
+            - id: ares-elasticsearch
+              name: Ares Elasticsearch
+              type: elasticsearch
+              hosts:
+                - "https://{{ elasticsearch_hostname }}"
+              is_default: true
+              is_default_monitoring: true
+              ssl:
+                certificate_authorities:
+                  - "{{ lookup('ansible.builtin.file', '/root/ares-detection/.secrets/pki/root/root-ca.crt') }}"
+
+          # External fleet server endpoint for GOAD and other external agents
+          xpack.fleet.fleetServerHosts:
+            - id: "{{ eck_external_fleet_host_id }}"
+              name: Lab external Fleet Server
+              host_urls:
+                - "https://{{ fleet_server_hostname }}"
+              is_default: false
+              is_internal: false
+
+          xpack.fleet.packages:
+            - name: system
+              version: latest
+            - name: elastic_agent
+              version: latest
+            - name: fleet_server
+              version: latest
+
+          xpack.fleet.agentPolicies:
+            - name: Fleet Server on ECK
+              id: eck-fleet-server
+              namespace: default
+              is_managed: true
+              monitoring_enabled:
+                - logs
+                - metrics
+              unenroll_timeout: 900
+              package_policies:
+                - name: fleet-server-1
+                  id: fleet-server-1
+                  package:
+                    name: fleet_server
+
+            - name: Elastic Agent on ECK
+              id: eck-agent
+              namespace: default
+              is_managed: true
+              is_default: true
+              monitoring_enabled:
+                - logs
+                - metrics
+              unenroll_timeout: 900
+              package_policies:
+                - name: system-1
+                  id: system-1
+                  package:
+                    name: system
+
+        podTemplate:
+          spec:
+            containers:
+              - name: kibana
+                resources:
+                  requests:
+                    memory: "{{ kibana_memory_request }}"
+                    cpu: "{{ kibana_cpu_request }}"
+                  limits:
+                    memory: "{{ kibana_memory_limit }}"
+                    cpu: "{{ kibana_cpu_limit }}"
+  register: kibana_apply
+  until: kibana_apply is succeeded
+  retries: 10
+  delay: 5
+
+- name: Deploy Fleet Server
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: agent.k8s.elastic.co/v1alpha1
+      kind: Agent
+      metadata:
+        name: "{{ fleet_server_name }}"
+        namespace: "{{ elastic_namespace }}"
+      spec:
+        version: "{{ elastic_stack_version }}"
+        kibanaRef:
+          name: "{{ kibana_name }}"
+        elasticsearchRefs:
+          - name: "{{ elasticsearch_name }}"
+        mode: fleet
+        fleetServerEnabled: true
+        policyID: eck-fleet-server
+        deployment:
+          replicas: 1
+          podTemplate:
+            spec:
+              serviceAccountName: elastic-agent
+              automountServiceAccountToken: true
+              securityContext:
+                runAsUser: 0
+              containers:
+                - name: agent
+                  resources:
+                    requests:
+                      memory: "{{ fleet_memory_request }}"
+                      cpu: "{{ fleet_cpu_request }}"
+                    limits:
+                      memory: "{{ fleet_memory_limit }}"
+                      cpu: "{{ fleet_cpu_limit }}"
+  register: fleet_deployment
+  until: fleet_deployment is succeeded
+  retries: 10
+  delay: 5
+
+- name: Deploy Fleet-managed Elastic Agent on every K3s node
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: agent.k8s.elastic.co/v1alpha1
+      kind: Agent
+      metadata:
+        name: "{{ elastic_agent_name }}"
+        namespace: "{{ elastic_namespace }}"
+      spec:
+        version: "{{ elastic_stack_version }}"
+        kibanaRef:
+          name: "{{ kibana_name }}"
+        fleetServerRef:
+          name: "{{ fleet_server_name }}"
+        mode: fleet
+        policyID: eck-agent
+        daemonSet:
+          podTemplate:
+            spec:
+              serviceAccountName: elastic-agent
+              automountServiceAccountToken: true
+              securityContext:
+                runAsUser: 0
+              volumes:
+                - name: agent-data
+                  emptyDir: {}
+              containers:
+                - name: agent
+                  resources:
+                    requests:
+                      memory: "{{ elastic_agent_memory_request }}"
+                      cpu: "{{ elastic_agent_cpu_request }}"
+                    limits:
+                      memory: "{{ elastic_agent_memory_limit }}"
+                      cpu: "{{ elastic_agent_cpu_limit }}"
+  register: k3s_agent_deployment
+  until: k3s_agent_deployment is succeeded
+  retries: 10
+  delay: 5
+
+- name: Configure Traefik HTTPS transports (ECK backends)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: ServersTransport
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ elastic_namespace }}"
+      spec:
+        serverName: "{{ item.server_name }}"
+        rootCAs:
+          - secret: "{{ item.ca_secret }}"
+  loop:
+    - name: elasticsearch-eck-tls
+      server_name: "{{ elasticsearch_name }}-es-http.{{ elastic_namespace }}.svc"
+      ca_secret: "{{ elasticsearch_name }}-es-http-certs-public"
+
+    - name: kibana-eck-tls
+      server_name: "{{ kibana_name }}-kb-http.{{ elastic_namespace }}.svc"
+      ca_secret: "{{ kibana_name }}-kb-http-certs-public"
+
+    - name: fleet-eck-tls
+      server_name: "{{ fleet_server_name }}-agent-http.{{ elastic_namespace }}.svc"
+      ca_secret: "{{ fleet_server_name }}-agent-http-certs-public"
+
+- name: Configure HTTPS ingress routes for ECK services
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ elastic_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        routes:
+          - kind: Rule
+            match: "Host(`{{ item.hostname }}`)"
+            services:
+              - name: "{{ item.service }}"
+                port: "{{ item.port }}"
+                scheme: https
+                serversTransport: "{{ item.transport }}"
+        tls: {}
+  loop:
+    - name: elasticsearch
+      hostname: "{{ elasticsearch_hostname }}"
+      service: "{{ elasticsearch_name }}-es-http"
+      port: 9200
+      transport: elasticsearch-eck-tls
+    - name: kibana
+      hostname: "{{ kibana_hostname }}"
+      service: "{{ kibana_name }}-kb-http"
+      port: 5601
+      transport: kibana-eck-tls
+    - name: fleet-server
+      hostname: "{{ fleet_server_hostname }}"
+      service: "{{ fleet_server_name }}-agent-http"
+      port: 8220
+      transport: fleet-eck-tls
+

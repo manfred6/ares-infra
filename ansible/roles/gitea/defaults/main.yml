@@ -1,0 +1,30 @@
+---
+kubeconfig: "{{ playbook_dir }}/../artifacts/kubeconfig.yaml"
+
+# Gitea
+gitea_namespace: gitea
+gitea_release_name: gitea
+gitea_chart_repo: "https://dl.gitea.com/charts/"
+gitea_chart_name: gitea
+gitea_chart_version: "12.7.0"
+gitea_hostname: "gitea.ares.internal"
+gitea_storage_class: local-path
+gitea_storage_size: 30Gi
+gitea_admin_username: gitea-admin
+gitea_admin_email: "gitea@ares.internal"
+gitea_admin_secret_name: gitea-admin
+
+# Gitea Actions Runner
+gitea_runner_name: gitea-runner
+gitea_runner_secret_name: gitea-runner-registration
+gitea_runner_image: "docker.io/gitea/runner:3-dind-rootless"
+gitea_runner_instance_url: "{{ http://{{ gitea_release_name }}-http.{{ gitea_namespace }}.svc.cluster.local:3000/ }}"
+gitea_runner_replicas: 1
+gitea_runner_storage_class: local-path
+gitea_runner_storage_size: 2Gi
+gitea_runner_labels: "ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest"
+gitea_runner_memory_request: 512Mi
+gitea_runner_memory_limit: 2Gi
+gitea_runner_cpu_request: 250m
+gitea_runner_cpu_limit: "2"
+gitea_ca_path: "/root/ares-detection/.secrets/pki/root/root-ca.crt"

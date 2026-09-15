@@ -1,0 +1,28 @@
+---
+cert_manager_version: "v1.21.1"
+cert_manager_namespace: cert-manager
+cert_manager_chart_name: cert-manager
+
+# Root CA 
+lab_pki_dir: "/root/ares-detection/.secrets/pki"
+lab_root_ca_dir: "{{ lab_pki_dir }}/root"
+lab_ca_key: "{{ lab_root_ca_dir }}/root-ca.key"
+lab_ca_cert: "{{ lab_root_ca_dir }}/root-ca.crt"
+lab_root_ca_common_name: "Ares Lab Root CA"
+lab_root_ca_validity_days: 3650
+
+# Intermediate/issuing CA
+lab_issuing_ca_dir: "{{ lab_pki_dir }}/issuing"
+lab_issuing_ca_key: "{{ lab_issuing_ca_dir }}/issuing-ca.key"
+lab_issuing_ca_cert: "{{ lab_issuing_ca_dir }}/issuing-ca.crt"
+lab_issuing_ca_common_name: "Ares Lab Issuing CA"
+lab_issuing_ca_validity_days: 1825
+lab_issuing_ca_secret_name: lab-issuing-ca
+lab_cluster_issuer_name: lab-ca
+
+# Wildcard Cert
+lab_wildcard_namespace: kube-system
+lab_wildcard_certificate_name: lab-wildcard
+lab_wildcard_tls_secret_name: lab-wildcard-tls
+lab_wildcard_duration: 2160h
+lab_wildcard_renew_before: 720h

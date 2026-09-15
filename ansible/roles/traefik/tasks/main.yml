@@ -1,0 +1,136 @@
+---
+- name: Validate configuration
+  ansible.builtin.assert:
+    that:
+      - elastic_kubeconfig | length > 0
+      - traefik_lb_ip | length > 0
+      - metallb_addresses | length > 0
+      - lab_domain | length > 0
+      - traefik_tls_secret_name | length > 0
+
+- name: Verify cert-manager wildcard secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    api_version: v1
+    kind: Secret
+    namespace: "{{ traefik_namespace }}"
+    name: "{{ traefik_tls_secret_name }}"
+  register: traefik_wildcard_secret
+  until: traefik_wildcard_secret.resources | length == 1
+  retries: 10
+  delay: 5
+
+- name: Create MetalLB namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ metallb_namespace }}"
+        labels:
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: privileged
+          pod-security.kubernetes.io/warn: privileged
+
+- name: Install MetalLB
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: metallb
+        namespace: kube-system
+      spec:
+        repo: https://metallb.github.io/metallb
+        chart: metallb
+        version: "{{ metallb_chart_version }}"
+        targetNamespace: "{{ metallb_namespace }}"
+        createNamespace: false
+        timeout: 5m
+        valuesContent: |-
+          speaker:
+            frr:
+              enabled: false
+          frrk8s:
+            enabled: false
+
+- name: Configure MetalLB address pool
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: "{{ metallb_pool_name }}"
+        namespace: "{{ metallb_namespace }}"
+      spec:
+        addresses: "{{ metallb_addresses }}"
+  register: addr_pool_apply
+  until: addr_pool_apply is success
+  retries: 10
+  wait: 5
+
+- name: Configure MetalLB layer-2 advertisement
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: "{{ metallb_pool_name }}"
+        namespace: "{{ metallb_namespace }}"
+      spec:
+        ipAddressPools:
+          - "{{ metallb_pool_name }}"
+  register: l2_adv_apply
+  until: l2_adv_apply is success
+  retries: 10
+  wait: 5
+
+- name: Configure k3s packaged Traefik
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChartConfig
+      metadata:
+        name: traefik
+        namespace: kube-system
+      spec:
+        valuesContent: |-
+          service:
+            annotations:
+              metallb.io/loadBalancerIPs: "{{ traefik_lb_ip }}"
+          providers:
+            kubernetesCRD:
+              defaultTLSResourcesNamespace: "{{ traefik_namespace }}"
+  register: traefik_apply
+  until: traefik_apply is success
+  retries: 10
+  wait: 5
+
+- name: Configure Traefik default wildcard certificate
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: TLSStore
+      metadata:
+        name: "{{ traefik_tls_store_name }}"
+        namespace: "{{ traefik_namespace }}"
+      spec:
+        defaultCertificate:
+          secretName: "{{ traefik_tls_secret_name }}"
+  register: traefik_wildcard_apply
+  until: traefik_wildcard_apply is success
+  retries: 10
+  wait: 5
+

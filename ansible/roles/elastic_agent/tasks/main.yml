@@ -1,0 +1,129 @@
+---
+- name: Read fleet enrollment token
+  ansible.builtin.set_fact:
+    elastic_fleet_enrollment_token: "{{ lookup('ansible.builtin.env', 'ELASTIC_FLEET_ENROLLMENT_TOKEN') }}"
+  no_log: true
+
+- name: Require Fleet enrollment token
+  ansible.builtin.assert:
+    that:
+      - elastic_fleet_enrollment_token | length > 0
+    fail_msg: "ELASTIC_FLEET_ENROLLMENT_TOKEN is not set."
+  no_log: true
+
+  # lazy match on ^dc naming as GOAD is predictable
+- name: Configure Ares DNS conditional forwarder
+  ansible.windows.win_dns_zone:
+    name: "{{ ares_dns_zone }}"
+    type: forwarder
+    dns_servers:
+      - "{{ ares_dns_forwarder }}"
+    replication: forest
+    state: present
+  when: inventory_hostname is match('^dc')
+
+- name: Check Ares root CA on provisioning host
+  ansible.builtin.stat:
+    path: "{{ elastic_root_ca_src }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: elastic_root_ca_stat
+
+- name: Require Ares root CA env set
+  ansible.builtin.assert:
+    that:
+      - elastic_root_ca_stat.stat.exists
+      - elastic_root_ca_stat.stat.isreg
+    fail_msg: >-
+      Root CA not found at {{ elastic_root_ca_src }}.
+      Set ARES_ROOT_CA_CERT to the Ares root-ca.crt path.
+  run_once: true
+
+- name: Create elastic agent controller cache
+  ansible.builtin.file:
+    path: "{{ elastic_agent_controller_cache_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Download elastic agent windows archive on controller
+  ansible.builtin.get_url:
+    url: "{{ elastic_agent_download_url }}"
+    dest: "{{ elastic_agent_controller_archive }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Ensure elastic agent staging directory exists
+  ansible.windows.win_file:
+    path: "{{ elastic_agent_windows_staging_dir }}"
+    state: directory
+
+- name: Copy Ares root CA to windows host
+  ansible.windows.win_copy:
+    src: "{{ elastic_root_ca_src }}"
+    dest: "{{ elastic_agent_windows_ca }}"
+
+- name: Trust Ares root CA in localhost store
+  ansible.windows.win_certificate_store:
+    path: "{{ elastic_agent_windows_ca }}"
+    state: present
+    store_location: LocalMachine
+    store_name: Root
+
+- name: Check whether elastic agent service exists
+  ansible.windows.win_service_info:
+    name: "{{ elastic_agent_service_name }}"
+  register: elastic_agent_service
+
+- name: Copy elastic agent archive to windows host
+  ansible.windows.win_copy:
+    src: "{{ elastic_agent_controller_archive }}"
+    dest: "{{ elastic_agent_windows_archive }}"
+  when: not elastic_agent_service.exists
+
+- name: Ensure extraction directory exists
+  ansible.windows.win_file:
+    path: "{{ elastic_agent_windows_extract_dir }}"
+    state: directory
+  when: not elastic_agent_service.exists
+
+- name: Extract elastic agent archive
+  ansible.windows.win_shell: >-
+    Expand-Archive
+    -LiteralPath '{{ elastic_agent_windows_archive }}'
+    -DestinationPath '{{ elastic_agent_windows_extract_dir }}'
+    -Force
+  args:
+    executable: powershell.exe
+    creates: "{{ elastic_agent_windows_source_exe }}"
+  when: not elastic_agent_service.exists
+
+- name: Install and enroll elastic agent
+  ansible.windows.win_command: >-
+    "{{ elastic_agent_windows_source_exe }}"
+    install
+    --url={{ elastic_fleet_url }}
+    --enrollment-token={{ elastic_fleet_enrollment_token }}
+    --certificate-authorities="{{ elastic_agent_windows_ca }}"
+    --non-interactive
+  args:
+    chdir: "{{ elastic_agent_windows_source_dir }}"
+  when: not elastic_agent_service.exists
+  no_log: true
+
+- name: Verify elastic agent service
+  ansible.windows.win_service_info:
+    name: "{{ elastic_agent_service_name }}"
+  register: elastic_agent_service_after
+
+- name: Require elastic agent service to be present
+  ansible.builtin.assert:
+    that:
+      - elastic_agent_service_after.exists
+    fail_msg: "Elastic Agent service was not installed successfully."
+

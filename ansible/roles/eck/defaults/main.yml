@@ -1,0 +1,38 @@
+---
+# Operator
+eck_version: "3.5.0"
+elastic_stack_version: "9.5.3"
+eck_operator_namespace: elastic-system
+elastic_namespace: elastic
+
+elasticsearch_name: elasticsearch
+kibana_name: kibana
+fleet_server_name: fleet-server
+elastic_agent_name: elastic-agent
+
+# Elasticsearch
+elasticsearch_node_count: "1"
+elasticsearch_memory_request: "4Gi"
+elasticsearch_memory_limit: "4Gi"
+elasticsearch_cpu_request: "500m"
+elasticsearch_cpu_limit: "2"
+elasticsearch_storage_class: local-path
+elasticsearch_storage_size: 30Gi
+
+# Kibana
+kibana_memory_request: "1Gi"
+kibana_memory_limit: "2Gi"
+kibana_cpu_request: "250m"
+kibana_cpu_limit: "1"
+
+# Fleet Server
+fleet_memory_request: "512Mi"
+fleet_memory_limit: "1Gi"
+fleet_cpu_request: "100m"
+fleet_cpu_limit: "500m"
+
+# Elastic Agent
+elastic_agent_memory_request: "256Mi"
+elastic_agent_memory_limit: "1Gi"
+elastic_agent_cpu_request: "100m"
+elastic_agent_cpu_limit: "500m"

@@ -1,0 +1,196 @@
+---
+# Validate configuration
+- name: Validate cert-manager PKI configuration
+  ansible.builtin.assert:
+    that:
+      - elastic_kubeconfig | length > 0
+      - cert_manager_version | length > 0
+      - cert_manager_namespace | length > 0
+      - lab_domain | length > 0
+      - lab_pki_dir | length > 0
+      - lab_root_ca_validity_days | int > 0
+      - lab_issuing_ca_validity_days | int > 0
+      - lab_wildcard_duration | length > 0
+      - lab_wildcard_renew_before | length > 0
+
+# Root CA
+- name: Ensure local PKI dirs exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ lab_pki_dir }}"
+    - "{{ lab_root_ca_dir }}"
+    - "{{ lab_issuing_ca_dir }}"
+
+- name: Generate root CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ lab_ca_key }}"
+    type: RSA
+    size: 4096
+    mode: "0600"
+
+- name: Generate root CA CSR
+  community.crypto.openssl_csr:
+    path: "{{ lab_root_ca_dir }}/root-ca.csr"
+    privatekey_path: "{{ lab_ca_key }}"
+    common_name: "{{ lab_root_ca_common_name }}"
+    basic_constraints:
+      - "CA:TRUE"
+      - "pathlen:1"
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+
+- name: Generate root CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ lab_ca_cert }}"
+    csr_path: "{{ lab_root_ca_dir }}/root-ca.csr"
+    privatekey_path: "{{ lab_ca_key }}"
+    provider: selfsigned
+    selfsigned_digest: sha256
+    selfsigned_not_before: "-1d"
+    selfsigned_not_after: "+{{ lab_root_ca_validity_days }}d"
+
+# Intermediate/issuing CA
+- name: Generate issuing CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ lab_issuing_ca_key }}"
+    type: RSA
+    size: 4096
+    mode: "0600"
+
+- name: Generate issuing CA CSR
+  community.crypto.openssl_csr:
+    path: "{{ lab_issuing_ca_dir }}/issuing-ca.csr"
+    privatekey_path: "{{ lab_issuing_ca_key }}"
+    common_name: "{{ lab_issuing_ca_common_name }}"
+    basic_constraints:
+      - "CA:TRUE"
+      - "pathlen:0"
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+    name_constraints_permitted:
+      - "DNS:{{ lab_domain }}"
+      - "DNS:.{{ lab_domain }}"
+    name_constraints_critical: true
+
+- name: Sign issuing CA with root CA
+  community.crypto.x509_certificate:
+    path: "{{ lab_issuing_ca_cert }}"
+    csr_path: "{{ lab_issuing_ca_dir }}/issuing-ca.csr"
+    provider: ownca
+    ownca_path: "{{ lab_ca_cert }}"
+    ownca_privatekey_path: "{{ lab_ca_key }}"
+    ownca_digest: sha256
+    ownca_not_before: "-1d"
+    ownca_not_after: "+{{ lab_issuing_ca_validity_days }}d"
+
+# cert-manager
+- name: Create cert-manager namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cert_manager_namespace }}"
+
+- name: Install cert-manager
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: "{{ cert_manager_chart_name }}"
+        namespace: kube-system
+      spec:
+        repo: https://charts.jetstack.io
+        chart: cert-manager
+        version: "{{ cert_manager_version }}"
+        targetNamespace: "{{ cert_manager_namespace }}"
+        createNamespace: false
+        timeout: 10m
+        valuesContent: |-
+          crds:
+            enabled: true
+
+# CA Secret and ClusterIssuer
+- name: Store issuing CA key and certificate chain for cert-manager
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ lab_issuing_ca_secret_name }}"
+        namespace: "{{ cert_manager_namespace }}"
+      type: kubernetes.io/tls
+      stringData:
+        tls.key: "{{ lookup('file', lab_issuing_ca_key) }}"
+        tls.crt: "{{ query('file', lab_issuing_ca_cert, lab_ca_cert) | join('\n') }}"
+  no_log: true
+
+- name: Create lab ClusterIssuer
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ lab_cluster_issuer_name }}"
+      spec:
+        ca:
+          secretName: "{{ lab_issuing_ca_secret_name }}"
+  register: lab_cluster_issuer
+  until: lab_cluster_issuer is succeeded
+  retries: 10
+  delay: 5
+
+# Shared Traefik wildcard certificate
+- name: Request wildcard certificate for Traefik
+  kubernetes.core.k8s:
+    kubeconfig: "{{ elastic_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ lab_wildcard_certificate_name }}"
+        namespace: "{{ lab_wildcard_namespace }}"
+      spec:
+        secretName: "{{ lab_wildcard_tls_secret_name }}"
+        duration: "{{ lab_wildcard_duration }}"
+        renewBefore: "{{ lab_wildcard_renew_before }}"
+        revisionHistoryLimit: 3
+        privateKey:
+          algorithm: RSA
+          size: 2048
+          rotationPolicy: Always
+        usages:
+          - digital signature
+          - key encipherment
+          - server auth
+        dnsNames:
+          - "{{ lab_domain }}"
+          - "*.{{ lab_domain }}"
+        issuerRef:
+          name: "{{ lab_cluster_issuer_name }}"
+          kind: ClusterIssuer
+          group: cert-manager.io
+  register: wildcard_certificate
+  until: wildcard_certificate is succeeded
+  retries: 10
+  delay: 5
+

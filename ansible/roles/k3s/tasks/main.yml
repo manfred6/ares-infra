@@ -1,0 +1,222 @@
+---
+- name: Define bootstrap server
+  ansible.builtin.set_fact:
+    k3s_bootstrap_host: "{{ groups['k3s_servers'][0] }}"
+  run_once: true
+
+# maybe check that user supplied 1 or odd number of nodes for etcd quorum?
+
+# Prereqs
+- name: Install prerequisite pkgs
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - apparmor
+      - apparmor-utils
+    state: present
+    update_cache: true
+
+- name: Disable swap
+  ansible.builtin.command: swapoff -a
+  when: ansible_swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Disable swap in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#]\S*\s+\S+\s+swap\s+\S+.*)$'
+    replace: '# \1'
+
+- name: Load br_netfilter
+  ansible.builtin.command: modprobe br_netfilter
+  changed_when: false
+
+- name: Persist br_netfilter module
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k3s.conf
+    content: "br_netfilter\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure Kubernetes networking sysctls
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  loop:
+    - { name: net.ipv4.ip_forward, value: "1" }
+    - { name: net.bridge.bridge-nf-call-iptables, value: "1" }
+
+- name: Ensure systemd-resolved drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: k3s_dns_server | length > 0
+
+- name: Configure OPNsense as DNS with custom search domain
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/10-k3s-lab-dns.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Resolve]
+      DNS={{ k3s_dns_server }}
+      Domains={{ k3s_dns_search_domain }} ~.
+  when: k3s_dns_server | length > 0
+  notify: Restart systemd-resolved
+
+- name: Configure dedicated k3s resolver
+  ansible.builtin.copy:
+    dest: /etc/rancher/k3s/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      nameserver {{ k3s_dns_server }}
+      options timeout:2 attempts:3
+  when: k3s_dns_server | length > 0
+  notify: Restart k3s
+
+- name: Flush DNS handler before k3s configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Create k3s configuration directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download k3s installer
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /usr/local/src/install-k3s.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write bootstrap server configuration
+  ansible.builtin.copy:
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      cluster-init: true
+      node-ip: "{{ k3s_node_ip | default(ansible_host) }}"
+      advertise-address: "{{ k3s_node_ip | default(ansible_host) }}"
+      flannel-backend: "{{ k3s_flannel_backend }}"
+      cluster-cidr: "{{ k3s_cluster_cidr }}"
+      service-cidr: "{{ k3s_service_cidr }}"
+      cluster-domain: "{{ k3s_cluster_domain }}"
+      resolv-conf: "{{ k3s_resolv_conf }}"
+      disable:
+        - servicelb
+      {% if k3s_api_sans | length > 0 %}
+      tls-san:
+      {% for san in k3s_api_sans %}
+        - "{{ san }}"
+      {% endfor %}
+      {% endif %}
+  when: inventory_hostname == k3s_bootstrap_host
+  notify: Restart k3s
+
+- name: Install bootstrap k3s server
+  ansible.builtin.command: /usr/local/src/install-k3s.sh server
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+  args:
+    creates: /usr/local/bin/k3s
+  when: inventory_hostname == k3s_bootstrap_host
+
+- name: Flush K3s restart handler before bootstrap API checks
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for bootstrap k3s api
+  ansible.builtin.command: k3s kubectl get --raw=/readyz
+  register: k3s_api_ready
+  until: k3s_api_ready.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+  when: inventory_hostname == k3s_bootstrap_host
+
+- name: Read generated k3s server token
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/token
+  register: k3s_server_token_raw
+  no_log: true
+  when: inventory_hostname == k3s_bootstrap_host
+
+- name: Store k3s server token for joining nodes
+  ansible.builtin.set_fact:
+    k3s_server_token: "{{ k3s_server_token_raw.content | b64decode | trim }}"
+  no_log: true
+  when: inventory_hostname == k3s_bootstrap_host
+
+- name: Write joining server configuration
+  ansible.builtin.copy:
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      server: "https://{{ hostvars[k3s_bootstrap_host].ansible_host }}:6443"
+      token: "{{ hostvars[k3s_bootstrap_host].k3s_server_token }}"
+      node-ip: "{{ k3s_node_ip | default(ansible_host) }}"
+      advertise-address: "{{ k3s_node_ip | default(ansible_host) }}"
+      flannel-backend: "{{ k3s_flannel_backend }}"
+      cluster-cidr: "{{ k3s_cluster_cidr }}"
+      service-cidr: "{{ k3s_service_cidr }}"
+      cluster-domain: "{{ k3s_cluster_domain }}"
+      resolv-conf: "{{ k3s_resolv_conf }}"
+      disable:
+        - servicelb
+      {% if k3s_api_sans | length > 0 %}
+      tls-san:
+      {% for san in k3s_api_sans %}
+        - "{{ san }}"
+      {% endfor %}
+      {% endif %}
+  when: inventory_hostname != k3s_bootstrap_host
+  no_log: true
+  notify: Restart k3s
+
+- name: Install joining k3s servers
+  ansible.builtin.command: /usr/local/src/install-k3s.sh server
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+  args:
+    creates: /usr/local/bin/k3s
+  when: inventory_hostname != k3s_bootstrap_host
+  throttle: 1
+
+- name: Flush k3s restart handler before cluster readiness checks
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for all k3s nodes to be Ready
+  ansible.builtin.command: k3s kubectl wait node --all --for=condition=Ready --timeout=300s
+  delegate_to: "{{ groups['k3s_servers'][0] }}"
+  run_once: true
+  changed_when: false
+
+- name: Show cluster nodes
+  ansible.builtin.command: k3s kubectl get nodes -o wide
+  delegate_to: "{{ groups['k3s_servers'][0] }}"
+  run_once: true
+  register: k3s_nodes
+  changed_when: false
+
+- name: Display cluster nodes
+  ansible.builtin.debug:
+    var: k3s_nodes.stdout_lines
+  run_once: true

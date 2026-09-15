@@ -1,0 +1,7 @@
+---
+collections:
+  - name: ansible.posix
+  - name: community.crypto
+  - name: kubernetes.core
+  - name: ansible.windows
+    version: ">=2.6.0"

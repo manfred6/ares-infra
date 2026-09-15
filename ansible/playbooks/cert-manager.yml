@@ -1,0 +1,7 @@
+---
+- name: Install cert-manager and configure lab issuing CA
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: cert_manager
